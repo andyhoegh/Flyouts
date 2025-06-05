@@ -1,0 +1,480 @@
+---
+title: "Comparing Flyout Counts with Radar Observations"
+format: html
+editor: visual
+editor_options: 
+  chunk_output_type: console
+execute:
+  echo: false  
+  message: false
+  warning: false
+---
+
+### Flyout Count Basics
+
+1.  Observations are generally made from the airport tarmac (Ballina) but there are collected from a few other locations.
+
+2.  Generally a total count is calculated along with starting and ending times.
+
+3.  For radar observations associated with observations made at the Ballina airport, radar tracks filtered to only include those intersection the airport boundary and moving in a Northerly direction (departing the roost).
+
+```{r}
+#| message: false
+#| fig-height: 8
+
+library(tidyverse)
+library(sf)
+library(gganimate)
+library(knitr)
+flyout_info <- read_csv("../ballina_airport_flying_fox_survey.csv") |> 
+  rename(lat = `latitude...1`,
+         lon = `longitude...2`)
+
+##############################
+# March 5 -  17:23 - 18:32
+# March 13 - 19:11 - 19:51
+# April 22 - 17:47 - 18:08
+# May 29 -   17:30 - 17:46
+# June 5 -   17:23 - 17:41
+# June 17 -  18:33 - 18:54
+##############################
+ 
+tracks <- read_csv('../March5_Flyouts.csv') |>
+  rename(geom = trajectory) |>
+  mutate(oz_time = with_tz(timestamp_start, tzone = 'Australia/Sydney'),
+         hour_start = hour(oz_time),
+         minute_start = minute(oz_time),
+         second_start = second(oz_time))
+
+ballina_airport_shape <- sf::st_read("../BallinaAirport.kml", quiet = T)
+
+library(ggmap) 
+register_google(key ='AIzaSyCVnXJQ70XWWdzvlkP7rb_XDhKfPHgkkyo') 
+
+# ballina_airport <- get_map(location = c( lon = 153.5563, lat = -28.8375), zoom = 14, maptype = 'satellite')
+#  save(ballina_airport, file = 'ballina_map.RData')
+load('../ballina_map.RData')
+
+#tmp_box |> ggplot(aes(x=lon, y=lat)) + geom_polygon(fill = 'blue')
+
+radar_location = tibble( lat = -28.833383, long = 153.56688)
+library(ggimage)
+ggmap(ballina_airport) +
+  geom_image(aes(y=lat, x=lon, image = 'bino_small.png'), size = .025, data = flyout_info[2,]) + 
+  annotate('text', label = 'Observation point', x = 153.556, y = -28.833, color = 'white') +
+  annotate('text', label = 'Roost', x = 153.565, y = -28.857, color = 'white') +
+  annotate('text', label = 'Melaleuca trees', x = 153.56, y = -28.825, color = 'white') + 
+  annotate('text', label = 'Radar location', x = 153.567, y = -28.8315, color = 'white') +
+    geom_point(aes(y = lat, x = long), data = radar_location, size = 3,color = 'white') +
+
+  geom_point(aes(y = lat, x = long), data = radar_location, color = 'red') +
+  theme(axis.ticks = element_blank(),
+         axis.text = element_blank(),
+         legend.position = 'none') +
+  xlab('') + ylab('') 
+
+```
+
+------------------------------------------------------------------------
+
+### March 5: Ballina
+
+-   Transit start `r flyout_info |> filter(date == "5/03/2024") |> select(transit_start)`
+-   Transit "finish" `r flyout_info |> filter(date == "5/03/2024") |> select(transit_finish)`
+-   Last light `r flyout_info |> filter(date == "5/03/2024") |> select(last_light)`
+-   Number of flying fox observed `r flyout_info |> filter(date == "5/03/2024") |> select(no_flying_fox_maj_direction)`
+
+```{r}
+extract_time <- function(string){
+  as.numeric(str_split(str_remove(str_remove(string, '\\{'), '\\}'), ',', simplify = T))
+}
+
+```
+
+```{r}
+#| fig-cap: "Flyout tracks from 1750 - 1753 (at double speed)"
+
+tracks <- read_csv('../March5_Flyouts.csv') |>
+  rename(geom = trajectory) |>
+  mutate(oz_time = with_tz(timestamp_start, tzone = 'Australia/Sydney'),
+         hour_start = hour(oz_time),
+         minute_start = minute(oz_time),
+         second_start = second(oz_time)) |>
+  filter()
+
+tracks_sf <- st_as_sf(tracks, wkt = "geom", crs = st_crs(4326))
+
+tracks_plot <- tracks_sf |>
+  mutate(geom = st_zm(geom, drop = T, what = 'ZM'))
+tmp <- st_intersects(tracks_plot, ballina_airport_shape)
+keep <- unlist(lapply(tmp, sum)) > 0
+
+tracks_airport <- tracks_plot[keep,]
+
+time_adjust <- as.numeric(unlist(sapply(tracks_airport$trajectory_time, extract_time)))
+time_start <- rep(tracks_airport$oz_time, tracks_airport$nr_of_plots)
+
+real_time <- time_start + time_adjust
+
+all_id <- rep(tracks_airport$classification_id, tracks_airport$nr_of_plots)
+
+direction <- rep(tracks_airport$phi_diff, tracks_airport$nr_of_plots)
+
+
+coords <- st_coordinates(tracks_airport) |> as_tibble() |>
+  mutate(time = real_time,
+         classification_id = all_id,
+         direction = direction)
+
+
+flyout <- coords |> filter(time > ymd_hms('2024-03-05 17:23:00', tz = 'Australia/Sydney'),
+                           time < ymd_hms('2024-03-05 18:00:00', tz = 'Australia/Sydney')) |>
+  mutate(minute = minute(time),
+         second = round(second(time)),
+         id = factor(L1),
+         move_time = round_date(time, unit ='second'),
+         classification_id = factor(classification_id)) |>
+  filter(direction < pi/2, direction > -pi/2)
+
+bats_move <- ggmap(ballina_airport) +
+  geom_image(aes(y=lat, x=lon, image = 'bino_small.png'), size = .025, data = flyout_info[2,]) +
+  geom_point(aes(x=X, y=Y, color = classification_id), data = flyout |> 
+               filter(minute %in% c(50,51,52,53))) +
+  transition_time(move_time) +
+ # shadow_wake(wake_length = 1)    +
+  #shadow_mark(past = TRUE, future = FALSE, alpha = 0.3)+
+  #labs(title = "Time: {round_date(frame_time, unit ='second')}") +
+  labs(title = "Time: {round_date(with_tz(frame_time, tz = 'Australia/Sydney') ,unit = 'second')}") +
+  theme(legend.position = 'none') +
+  exit_fade() +
+  scale_color_manual(values=c("#9C27B0",'#E62A10','#FF9800', '#FFEB3B')) +
+  shadow_mark(color = "grey", alpha = .1) 
+  
+
+animate(bats_move, fps = 2, nframes = 240)
+
+```
+
+-   Note: this was an interesting night with a "double flyout"
+
+```{r}
+#| message: false
+
+minutes <- read_csv('../March_counts_minute.csv') |>
+  mutate(day = ymd(paste('2024-03-', day_var, sep = ''))) |>
+  mutate(date = ymd_hm(paste('2024-03-', day_var,' ', hour_var,':', min_var,  sep = ''))) |>
+  mutate(oz_time = with_tz(date, tzone = 'Australia/Sydney'),
+         day_oz = day(oz_time),
+         month_oz = month(oz_time)) |>
+  mutate(classification_id = factor(classification_id),
+         type = case_when(
+           classification_id == 5 ~ 'flock',
+           classification_id == 6 ~ 'large',
+           classification_id == 7 ~ 'medium',
+           classification_id == 8 ~ 'small',
+         )) 
+
+mar5 <- minutes |> filter(day_oz == 5)
+mar5 |> 
+  ggplot(aes(y = count, x= oz_time, fill = type)) +
+  geom_col() + 
+  facet_wrap(.~type, ncol = 1) +
+  scale_fill_manual(values=c("#9C27B0",'#E62A10','#FF9800', '#FFEB3B')) +
+  theme_bw() +
+  theme(legend.position = 'none') +
+  xlab('') +
+  ylab('Total tracks') +
+  ggtitle(label = 'March 5') +
+  geom_vline(xintercept = ymd_hm('2024-03-05 8:14'), linetype = 2, linewidth = .2 ) +
+  annotate('rect', xmin=ymd_hm('2024-03-05 8:14'), xmax=ymd_hm('2024-03-05 12:59'), ymin=0, ymax=max(mar5$count), alpha=.2, fill='gray5') +
+  geom_vline(xintercept = ymd_hm('2024-03-04 19:39'), linetype = 2, linewidth = .2 ) +
+  annotate('rect', xmin=ymd_hm('2024-03-04 13:00'), xmax=ymd_hm('2024-03-04 19:40'), ymin=0, ymax=max(mar5$count), alpha=.2, fill='gray5') +
+  labs(caption = 'Dashed vertical lines represent sunrise (06:40) and sunset (19:14)')
+```
+
+------------------------------------------------------------------------
+
+### March 13: Ballina
+
+-   Transit start `r flyout_info |> filter(date == "13/03/2024") |> select(transit_start)`
+-   Transit finish `r flyout_info |> filter(date == "13/03/2024") |> select(transit_finish)`
+-   Last light `r flyout_info |> filter(date == "13/03/2024") |> select(last_light)`
+-   Number of flying fox observed `r flyout_info |> filter(date == "13/03/2024") |> select(no_flying_fox_maj_direction)`
+-   5 minute Counts:
+    -   19:16 $\rightarrow$ 76
+    -   19:21 $\rightarrow$ 130
+    -   19:26 $\rightarrow$ 1150
+    -   19:31 $\rightarrow$ 520
+    -   19:36 $\rightarrow$ 140
+    -   19:41 $\rightarrow$ 80
+    -   19:46 $\rightarrow$ 30
+    -   19:51 $\rightarrow$ 8
+
+```{r}
+tracks <- read_csv('../March13_Flyouts.csv') |>
+  rename(geom = trajectory) |>
+  mutate(oz_time = with_tz(timestamp_start, tzone = 'Australia/Sydney'),
+         hour_start = hour(oz_time),
+         minute_start = minute(oz_time),
+         second_start = second(oz_time))
+
+tracks_sf <- st_as_sf(tracks, wkt = "geom", crs = st_crs(4326))
+
+tracks_plot <- tracks_sf |>
+  mutate(geom = st_zm(geom, drop = T, what = 'ZM'))
+
+tmp <- st_intersects(tracks_plot, ballina_airport_shape)
+keep <- unlist(lapply(tmp, sum)) > 0
+
+tracks_airport <- tracks_plot[keep,]
+
+time_adjust <- as.numeric(unlist(sapply(tracks_airport$trajectory_time, extract_time)))
+time_start <- rep(tracks_airport$oz_time, tracks_airport$nr_of_plots)
+
+real_time <- time_start + time_adjust
+
+all_id <- rep(tracks_airport$classification_id, tracks_airport$nr_of_plots)
+
+direction <- rep(tracks_airport$phi_diff, tracks_airport$nr_of_plots)
+
+
+coords <- st_coordinates(tracks_airport) |> as_tibble() |>
+  mutate(time = real_time,
+         classification_id = all_id,
+         direction = direction)
+
+
+flyout <- coords |> 
+  mutate(minute = minute(time),
+         second = round(second(time)),
+         id = factor(L1),
+         move_time = round_date(time, unit ='second'),
+         classification_id = factor(classification_id)) |>
+  filter(direction < pi/2, direction > -pi/2)
+
+flyout |>
+  mutate(five_min = case_when(
+    time < with_tz(ymd_hm('2024-03-13 08:16'),tz = 'Australia/Sydney')  ~ '19:16',
+    time < with_tz(ymd_hm('2024-03-13 08:21'),tz = 'Australia/Sydney')  ~ '19:21',
+    time < with_tz(ymd_hm('2024-03-13 08:26'),tz = 'Australia/Sydney')  ~ '19:26',
+    time < with_tz(ymd_hm('2024-03-13 08:31'),tz = 'Australia/Sydney')  ~ '19:31',
+    time < with_tz(ymd_hm('2024-03-13 08:36'),tz = 'Australia/Sydney')  ~ '19:36',
+    time < with_tz(ymd_hm('2024-03-13 08:41'),tz = 'Australia/Sydney')  ~ '19:41',
+    time < with_tz(ymd_hm('2024-03-13 08:46'),tz = 'Australia/Sydney')  ~ '19:46',
+    time < with_tz(ymd_hm('2024-03-13 08:51'),tz = 'Australia/Sydney')  ~ '19:51',
+    TRUE ~ 'blah'
+  )) |>
+  group_by(L1, five_min) |>
+  slice(1) |>
+  ungroup() |>
+  count(five_min) |>
+  kable()
+
+flyout |>
+  mutate(five_min = case_when(
+    time < with_tz(ymd_hm('2024-03-13 08:16'),tz = 'Australia/Sydney')  ~ '19:16',
+    time < with_tz(ymd_hm('2024-03-13 08:21'),tz = 'Australia/Sydney')  ~ '19:21',
+    time < with_tz(ymd_hm('2024-03-13 08:26'),tz = 'Australia/Sydney')  ~ '19:26',
+    time < with_tz(ymd_hm('2024-03-13 08:31'),tz = 'Australia/Sydney')  ~ '19:31',
+    time < with_tz(ymd_hm('2024-03-13 08:36'),tz = 'Australia/Sydney')  ~ '19:36',
+    time < with_tz(ymd_hm('2024-03-13 08:41'),tz = 'Australia/Sydney')  ~ '19:41',
+    time < with_tz(ymd_hm('2024-03-13 08:46'),tz = 'Australia/Sydney')  ~ '19:46',
+    time < with_tz(ymd_hm('2024-03-13 08:51'),tz = 'Australia/Sydney')  ~ '19:51',
+    TRUE ~ 'blah'
+  )) |>
+  group_by(L1, five_min) |>
+  slice(1) |>
+  ungroup() |>
+  count(five_min, classification_id) |>
+  kable()
+
+bats_move <- ggmap(ballina_airport) +
+  geom_image(aes(y=lat, x=lon, image = 'bino_small.png'), size = .025, data = flyout_info[2,]) +
+  geom_point(aes(x=X, y=Y, color = classification_id), data = flyout |> 
+               filter(minute %in% c(10,11,12,13))) +
+  transition_time(move_time) +
+ # shadow_wake(wake_length = 1)    +
+  #shadow_mark(past = TRUE, future = FALSE, alpha = 0.3)+
+  #labs(title = "Time: {round_date(frame_time, unit ='second')}") +
+  labs(title = "Time: {round_date(with_tz(frame_time, tz = 'Australia/Sydney') ,unit = 'second')}") +
+  theme(legend.position = 'none') +
+  exit_fade() +
+  scale_color_manual(values=c("#9C27B0",'#E62A10','#FF9800', '#FFEB3B')) +
+  shadow_mark(color = "grey", alpha = .1) 
+  
+
+animate(bats_move, fps = 2, nframes = 240)
+```
+
+```{r}
+mar13 <- minutes |> filter(day_oz == 13)
+mar13 |> 
+  ggplot(aes(y = count, x= oz_time, fill = type)) +
+  geom_col() + 
+  facet_wrap(.~type, ncol = 1) +
+  scale_fill_manual(values=c("#9C27B0",'#E62A10','#FF9800', '#FFEB3B')) +
+  theme_bw() +
+  theme(legend.position = 'none') +
+  xlab('') +
+  ylab('Total tracks') +
+  ggtitle(label = 'March 13') +
+  geom_vline(xintercept = ymd_hm('2024-03-13 8:05'), linetype = 2, linewidth = .2 ) +
+  annotate('rect', xmin=ymd_hm('2024-03-13 8:05'), xmax=ymd_hm('2024-03-13 12:59'), ymin=0, ymax=max(mar5$count), alpha=.2, fill='gray5') +
+  geom_vline(xintercept = ymd_hm('2024-03-12 19:45'), linetype = 2, linewidth = .2 ) +
+  annotate('rect', xmin=ymd_hm('2024-03-12 13:00'), xmax=ymd_hm('2024-03-12 19:45'), ymin=0, ymax=max(mar5$count), alpha=.2, fill='gray5') +
+  labs(caption = 'Dashed vertical lines represent sunrise (06:45) and sunset (19:05)')
+```
+
+------------------------------------------------------------------------
+
+### April 22: Lismore
+
+-   Transit start `r flyout_info |> filter(date == "22/04/2024") |> select(transit_start)`
+-   Transit finish `r flyout_info |> filter(date == "22/04/2024") |> select(transit_finish)`
+-   Last light `r flyout_info |> filter(date == "22/04/2024") |> select(last_light)`
+-   Number of flying fox observed `r flyout_info |> filter(date == "22/04/2024") |> select(no_flying_fox_maj_direction)`
+
+```{r}
+#| eval: FALSE
+# tracks <- read_csv('Apr22_Flyouts.csv') |>
+#   rename(geom = trajectory) |>
+#   mutate(oz_time = with_tz(timestamp_start, tzone = 'Australia/Sydney'),
+#          hour_start = hour(oz_time),
+#          minute_start = minute(oz_time),
+#          second_start = second(oz_time))
+# 
+# tracks_sf <- st_as_sf(tracks, wkt = "geom", crs = st_crs(4326))
+# 
+# tracks_plot <- tracks_sf |>
+#   mutate(geom = st_zm(geom, drop = T, what = 'ZM'))
+# 
+# tmp <- st_intersects(tracks_plot, ballina_airport_shape)
+# keep <- unlist(lapply(tmp, sum)) > 0
+# 
+# tracks_airport <- tracks_plot[keep,]
+# 
+# time_adjust <- as.numeric(unlist(sapply(tracks_airport$trajectory_time, extract_time)))
+# time_start <- rep(tracks_airport$oz_time, tracks_airport$nr_of_plots)
+# 
+# real_time <- time_start + time_adjust
+# 
+# all_id <- rep(tracks_airport$classification_id, tracks_airport$nr_of_plots)
+# 
+# direction <- rep(tracks_airport$phi_diff, tracks_airport$nr_of_plots)
+# 
+# 
+# coords <- st_coordinates(tracks_airport) |> as_tibble() |>
+#   mutate(time = real_time,
+#          classification_id = all_id,
+#          direction = direction)
+# 
+# 
+# flyout <- coords |> 
+#   mutate(minute = minute(time),
+#          second = round(second(time)),
+#          id = factor(L1),
+#          move_time = round_date(time, unit ='second'),
+#          classification_id = factor(classification_id)) |>
+#   filter(direction < pi/2, direction > -pi/2)
+# 
+# bats_move <- ggmap(ballina_airport) +
+#   geom_image(aes(y=lat, x=lon, image = 'bino_small.png'), size = .025, data = flyout_info[3,]) +
+#   geom_point(aes(x=X, y=Y, color = classification_id), data = flyout |> 
+#                filter(minute %in% c(10,11,12,13))) +
+#   transition_time(move_time) +
+#  # shadow_wake(wake_length = 1)    +
+#   #shadow_mark(past = TRUE, future = FALSE, alpha = 0.3)+
+#   #labs(title = "Time: {round_date(frame_time, unit ='second')}") +
+#   labs(title = "Time: {round_date(with_tz(frame_time, tz = 'Australia/Sydney') ,unit = 'second')}") +
+#   theme(legend.position = 'none') +
+#   exit_fade() +
+#   scale_color_manual(values=c("#9C27B0",'#E62A10','#FF9800', '#FFEB3B')) +
+#   shadow_mark(color = "grey", alpha = .1) 
+#   
+# 
+# animate(bats_move, fps = 2, nframes = 240)
+```
+
+------------------------------------------------------------------------
+
+### May 29: Ballina
+
+-   Transit start `r flyout_info |> filter(date == "29/05/2024") |> select(transit_start)`
+-   Transit finish `r flyout_info |> filter(date == "29/05/2024") |> select(transit_finish)`
+-   Last light `r flyout_info |> filter(date == "29/05/2024") |> select(last_light)`
+-   Number of flying fox observed `r flyout_info |> filter(date == "29/05/2024") |> select(no_flying_fox_maj_direction)`
+
+------------------------------------------------------------------------
+
+### June 5: Lennox Head
+
+-   Transit start `r flyout_info |> filter(date == "5/06/2024") |> select(transit_start)`
+-   Transit finish `r flyout_info |> filter(date == "5/06/2024") |> select(transit_finish)`
+-   Last light `r flyout_info |> filter(date == "5/06/2024") |> select(last_light)`
+-   Number of flying fox observed `r flyout_info |> filter(date == "5/06/2024") |> select(no_flying_fox_maj_direction)`
+
+------------------------------------------------------------------------
+
+### June 17
+
+-   Transit start `r flyout_info |> filter(date == "17/06/2024") |> select(transit_start)`
+-   Transit finish `r flyout_info |> filter(date == "17/06/2024") |> select(transit_finish)`
+-   Last light `r flyout_info |> filter(date == "17/06/2024") |> select(last_light)`
+-   Number of flying fox observed `r flyout_info |> filter(date == "17/06/2024") |> select(no_flying_fox_maj_direction)`
+
+------------------------------------------------------------------------
+
+### July 23
+
+-   Transit start `r flyout_info |> filter(date == "23/07/2024") |> select(transit_start)`
+-   Transit finish `r flyout_info |> filter(date == "23/07/2024") |> select(transit_finish)`
+-   Last light `r flyout_info |> filter(date == "23/07/2024") |> select(last_light)`
+-   Number of flying fox observed `r flyout_info |> filter(date == "23/07/2024") |> select(no_flying_fox_maj_direction)`
+
+------------------------------------------------------------------------
+
+### August 28
+
+-   Transit start `r flyout_info |> filter(date == "28/08/2024") |> select(transit_start)`
+
+-   Transit finish `r flyout_info |> filter(date == "28/08/2024") |> select(transit_finish)`
+
+-   Last light `r flyout_info |> filter(date == "28/08/2024") |> select(last_light)`
+
+-   
+
+    ## Number of flying fox observed `r flyout_info |> filter(date == "28/08/2024") |> select(no_flying_fox_maj_direction)`
+
+### September 24
+
+-   Transit start `r flyout_info |> filter(date == "24/09/2024") |> select(transit_start)`
+-   Transit finish `r flyout_info |> filter(date == "24/09/2024") |> select(transit_finish)`
+-   Last light `r flyout_info |> filter(date == "24/09/2024") |> select(last_light)`
+-   Number of flying fox observed `r flyout_info |> filter(date == "24/09/2024") |> select(no_flying_fox_maj_direction)`
+
+------------------------------------------------------------------------
+
+### October 15
+
+-   Transit start `r flyout_info |> filter(date == "15/10/2024") |> select(transit_start)`
+-   Transit finish `r flyout_info |> filter(date == "15/10/2024") |> select(transit_finish)`
+-   Last light `r flyout_info |> filter(date == "15/10/2024") |> select(last_light)`
+-   Number of flying fox observed `r flyout_info |> filter(date == "15/10/2024") |> select(no_flying_fox_maj_direction)`
+
+------------------------------------------------------------------------
+
+### November 19
+
+-   Transit start `r flyout_info |> filter(date == "19/11/2024") |> select(transit_start)`
+-   Transit finish `r flyout_info |> filter(date == "19/11/2024") |> select(transit_finish)`
+-   Last light `r flyout_info |> filter(date == "19/11/2024") |> select(last_light)`
+-   Number of flying fox observed `r flyout_info |> filter(date == "19/11/2024") |> select(no_flying_fox_maj_direction)`
+
+------------------------------------------------------------------------
+
+### December 16
+
+-   Transit start `r flyout_info |> filter(date == "16/12/2024") |> select(transit_start)`
+-   Transit finish `r flyout_info |> filter(date == "16/12/2024") |> select(transit_finish)`
+-   Last light `r flyout_info |> filter(date == "16/12/2024") |> select(last_light)`
+-   Number of flying fox observed `r flyout_info |> filter(date == "16/12/2024") |> select(no_flying_fox_maj_direction)`
